@@ -125,6 +125,7 @@ export namespace MapViewUtils {
         // center of the screen, in order to limit the tilt to `maxTiltAngle`, as we change
         // this tilt by changing the camera's height above.
         if (mapView.projection.type === ProjectionType.Spherical) {
+            // tslint:disable-next-line: deprecation
             const tilt = extractCameraTilt(mapView.camera, mapView.projection);
             const deltaTilt = tilt - maxTiltAngle;
             if (deltaTilt > 0) {
@@ -196,6 +197,8 @@ export namespace MapViewUtils {
      * @param camera The camera looking on target point.
      * @param projection The geo-projection used.
      * @param elevation Optional elevation above (or below) sea level measured in world units.
+     *
+     * @deprecated This function is for internal use only and will be removed in the future.
      */
     export function getGeoTargetFromCamera(
         camera: THREE.Camera,
@@ -205,6 +208,7 @@ export namespace MapViewUtils {
         // This function does almost the same as:
         // rayCastGeoCoordinates(mapView, 0, 0)
         // but in more gentle and performance wise manner
+        // tslint:disable-next-line: deprecation
         const targetWorldPos = getWorldTargetFromCamera(camera, projection, elevation);
         if (targetWorldPos !== null) {
             return projection.unprojectPoint(targetWorldPos);
@@ -217,6 +221,8 @@ export namespace MapViewUtils {
      * @param camera The camera looking on target point.
      * @param projection The geo-projection used.
      * @param elevation Optional elevation above (or below) sea level in world units.
+     *
+     * @deprecated This function is for internal use only and will be removed in the future.
      */
     export function getWorldTargetFromCamera(
         camera: THREE.Camera,
@@ -540,6 +546,8 @@ export namespace MapViewUtils {
      *
      * @param camera The [[Camera]] in use.
      * @param projection The [[Projection]] used to convert between geo and world coordinates.
+     *
+     * @deprecated This function is for internal use only and will be removed in the future.
      */
     export function extractCameraTilt(camera: THREE.Camera, projection: Projection): number {
         // For planar projections the camera target point local tangent is the same
@@ -556,6 +564,7 @@ export namespace MapViewUtils {
         } else {
             // Sanity check if new projection type is introduced.
             assert(projection.type === ProjectionType.Spherical);
+            // tslint:disable-next-line: deprecation
             const targetGeoCoords = MapViewUtils.getGeoTargetFromCamera(camera, projection);
             // If focus point is lost we then expose maximum allowable tilt value.
             if (targetGeoCoords !== null) {
