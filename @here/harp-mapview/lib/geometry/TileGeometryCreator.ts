@@ -1514,6 +1514,7 @@ export class TileGeometryCreator {
             };
             object.userData.feature = featureData;
             object.userData.technique = technique;
+            object.userData.tileCenter = tile.center;
         }
     }
 

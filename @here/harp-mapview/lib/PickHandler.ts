@@ -8,7 +8,10 @@ import { GeometryType, getFeatureId, Technique } from "@here/harp-datasource-pro
 import * as THREE from "three";
 
 import { OrientedBox3 } from "@here/harp-geoutils";
-import { MapView } from "./MapView";
+import { LoggerManager, PerformanceTimer } from "@here/harp-utils";
+import { DisplacedMesh } from "./geometry/DisplacedMesh";
+import { SolidLineMesh } from "./geometry/SolidLineMesh";
+import { MapView, MapViewEventNames } from "./MapView";
 import { MapViewPoints } from "./MapViewPoints";
 import { RoadPicker } from "./RoadPicker";
 import { RoadIntersectionData, Tile, TileFeatureData } from "./Tile";
@@ -51,6 +54,43 @@ export enum PickObjectType {
      * Any general 3D object, for example, a landmark.
      */
     Object3D
+}
+
+function getIntersectedFeatureIndex(intersect: THREE.Intersection): number | undefined {
+    const featureData = intersect.object.userData.feature;
+
+    if (!featureData) {
+        return undefined;
+    }
+
+    if (intersect.object instanceof MapViewPoints) {
+        return intersect.index!;
+    }
+
+    if (
+        featureData.starts === undefined ||
+        featureData.starts.length === 0 ||
+        (intersect.faceIndex === undefined && intersect.index === undefined)
+    ) {
+        return undefined;
+    }
+
+    if (featureData.starts.length === 1) {
+        return 0;
+    }
+
+    const intersectIndex =
+        intersect.faceIndex !== undefined ? intersect.faceIndex * 3 : intersect.index!;
+
+    // TODO: Implement binary search.
+    let featureIndex = 0;
+    for (const featureStartIndex of featureData.starts) {
+        if (featureStartIndex > intersectIndex) {
+            break;
+        }
+        featureIndex++;
+    }
+    return featureIndex - 1;
 }
 
 /**
@@ -99,6 +139,7 @@ export interface PickResult {
 }
 
 const tmpOBB = new OrientedBox3();
+const logger = LoggerManager.instance.create("PickHandler");
 
 /**
  * Handles the picking of scene geometry and roads.
@@ -106,6 +147,7 @@ const tmpOBB = new OrientedBox3();
 export class PickHandler {
     private readonly m_plane = new THREE.Plane(new THREE.Vector3(0, 0, 1));
     private readonly m_roadPicker?: RoadPicker;
+    private readonly m_debugGroup = new THREE.Group();
 
     constructor(
         readonly mapView: MapView,
@@ -116,6 +158,13 @@ export class PickHandler {
         if (enableRoadPicking) {
             this.m_roadPicker = new RoadPicker(mapView);
         }
+        this.m_debugGroup.renderOrder = 10000;
+
+        this.mapView.addEventListener(MapViewEventNames.Render, () => {
+            this.m_debugGroup.position.copy(this.mapView.worldCenter).negate();
+            this.m_debugGroup.updateMatrixWorld(true);
+            this.mapView.scene.add(this.m_debugGroup);
+        });
     }
 
     /**
@@ -137,6 +186,8 @@ export class PickHandler {
      * @returns the list of intersection results.
      */
     intersectMapObjects(x: number, y: number): PickResult[] {
+        const beginTime = PerformanceTimer.now();
+        this.m_debugGroup.children.length = 0;
         const worldPos = this.mapView.getNormalizedScreenCoordinates(x, y);
         const rayCaster = this.mapView.raycasterFromScreenPoint(x, y);
         const pickResults: PickResult[] = [];
@@ -148,19 +199,28 @@ export class PickHandler {
             const scenePosition = new THREE.Vector2(screenX, screenY);
             this.mapView.textElementsRenderer.pickTextElements(scenePosition, pickResults);
         }
+        const textTime = PerformanceTimer.now();
 
         const intersects: THREE.Intersection[] = [];
         const tileList = this.mapView.visibleTileSet.dataSourceTileList;
         tileList.forEach(dataSourceTileList => {
+            if (
+                dataSourceTileList.dataSource.name === "Terrain" ||
+                dataSourceTileList.dataSource.name === "background"
+            ) {
+                return;
+            }
             dataSourceTileList.renderedTiles.forEach(tile => {
                 tmpOBB.copy(tile.boundingBox);
                 tmpOBB.position.sub(this.mapView.worldCenter);
 
                 if (tmpOBB.intersectsRay(rayCaster.ray) !== undefined) {
+                    this.addDebugWorldOBBox(tile.boundingBox, new THREE.Color("red"));
                     rayCaster.intersectObjects(tile.objects, true, intersects);
                 }
             });
         });
+        const geometryTime = PerformanceTimer.now();
 
         for (const intersect of intersects) {
             const pickResult: PickResult = {
@@ -177,6 +237,8 @@ export class PickHandler {
                 pickResults.push(pickResult);
                 continue;
             }
+
+            this.addDebugIntersect(intersect);
 
             const featureData: TileFeatureData = intersect.object.userData.feature;
             if (this.enablePickTechnique) {
@@ -221,6 +283,11 @@ export class PickHandler {
             pickResults.push(pickResult);
         }
 
+        const endTime = PerformanceTimer.now();
+        logger.log(
+            `Picking time (text: ${textTime - beginTime}ms, geometry: ${geometryTime -
+                textTime}ms, total: ${endTime - beginTime}ms`
+        );
         if (this.enableRoadPicking) {
             const planeIntersectPosition = new THREE.Vector3();
             const cameraPos = this.mapView.camera.position.clone();
@@ -241,8 +308,130 @@ export class PickHandler {
         pickResults.sort((a: PickResult, b: PickResult) => {
             return a.distance - b.distance;
         });
+        if (pickResults.length > 0) {
+            this.addDebugRay(rayCaster.ray, pickResults[0].distance, new THREE.Color("yellow"));
+        }
 
+        this.mapView.update();
         return pickResults;
+    }
+
+    private addDebugRay(
+        ray: THREE.Ray,
+        length: number,
+        color: THREE.Color,
+        headLengthFactor: number = 0.1,
+        headWidthFactor: number = 0.01
+    ) {
+        ray = ray.clone();
+        ray.origin.add(this.mapView.worldCenter);
+
+        const rayHelper = new THREE.ArrowHelper(
+            ray.direction,
+            ray.origin,
+            length,
+            color.getHex(),
+            length * headLengthFactor,
+            length * headWidthFactor
+        );
+        (rayHelper.line.material as THREE.Material).depthTest = false;
+        (rayHelper.cone.material as THREE.Material).depthTest = false;
+        this.m_debugGroup.add(rayHelper);
+    }
+
+    private addDebugLine(line: THREE.Line3) {
+        const geometry = new THREE.BufferGeometry().setFromPoints([line.start, line.end]);
+        const material = new THREE.LineBasicMaterial({
+            color: "black",
+            depthTest: false
+        });
+        const lineObject = new THREE.Line(geometry, material);
+        lineObject.position.copy(this.mapView.worldCenter);
+        lineObject.updateMatrixWorld(true);
+        this.m_debugGroup.add(lineObject);
+    }
+
+    private addDebugIntersect(intersect: THREE.Intersection) {
+        if (intersect.object instanceof DisplacedMesh && intersect.object.m_displacedGeometry) {
+            const geometry = (intersect.object.m_displacedGeometry ??
+                intersect.object.geometry) as THREE.BufferGeometry;
+            this.addDebugBBox(
+                intersect.object.position,
+                geometry.boundingBox,
+                new THREE.Color("blue")
+            );
+        } else if (intersect.object instanceof SolidLineMesh) {
+            const geometry = (intersect.object.m_displacedGeometry ??
+                intersect.object.geometry) as THREE.BufferGeometry;
+            const featureIndex = getIntersectedFeatureIndex(intersect) ?? 0;
+            const boundingVolumes = intersect.object.userData.feature.boundingVolumes;
+            if (
+                featureIndex !== undefined &&
+                boundingVolumes &&
+                boundingVolumes.length > featureIndex
+            ) {
+                this.addDebugBSphere(
+                    intersect.object.position,
+                    boundingVolumes[featureIndex],
+                    new THREE.Color("magenta")
+                );
+            }
+            if (
+                geometry.userData &&
+                geometry.userData.debug &&
+                geometry.userData.debug.length > 0
+            ) {
+                const { line, ray, length } = geometry.userData.debug[0];
+                this.addDebugRay(ray, length, new THREE.Color("red"), 0.3, 0.2);
+                this.addDebugLine(line);
+            }
+        } else if (intersect.object instanceof THREE.Mesh) {
+            const geometry = intersect.object.geometry;
+            if (!geometry.boundingBox) {
+                geometry.computeBoundingBox();
+            }
+            this.addDebugBBox(
+                intersect.object.position,
+                geometry.boundingBox,
+                new THREE.Color("blue")
+            );
+        }
+    }
+
+    private addDebugBSphere(position: THREE.Vector3, sphere: THREE.Sphere, color: THREE.Color) {
+        const material = new THREE.MeshBasicMaterial({
+            color,
+            wireframe: true,
+            wireframeLinewidth: 2.0
+        });
+        const sphereGeometry = new THREE.SphereGeometry(sphere.radius);
+        sphereGeometry.translate(sphere.center.x, sphere.center.y, sphere.center.z);
+        const mesh = new THREE.Mesh(sphereGeometry, material);
+        mesh.position.copy(position).add(this.mapView.worldCenter);
+        this.m_debugGroup.add(mesh);
+    }
+
+    private addDebugBBox(position: THREE.Vector3, box: THREE.Box3, color: THREE.Color) {
+        box = box.clone();
+        box.translate(position).translate(this.mapView.worldCenter);
+        this.addDebugWorldBBox(box, color);
+    }
+
+    private addDebugWorldOBBox(obb: OrientedBox3, color: THREE.Color) {
+        const box = new THREE.Box3(obb.extents.clone().negate(), obb.extents.clone());
+        box.translate(obb.position);
+        this.addDebugWorldBBox(box, color, obb.getRotationMatrix());
+    }
+
+    private addDebugWorldBBox(bbox: THREE.Box3, color: THREE.Color, matrix?: THREE.Matrix4) {
+        if (bbox.getSize(new THREE.Vector3()).z === 0) {
+            bbox.max.z = bbox.min.z + 1;
+        }
+        const helper = new THREE.Box3Helper(bbox, color);
+        if (matrix) {
+            helper.setRotationFromMatrix(matrix);
+        }
+        this.m_debugGroup.add(helper);
     }
 
     private addObjInfo(
@@ -254,35 +443,9 @@ export class PickHandler {
             return;
         }
 
-        if (pickResult.intersection!.object instanceof MapViewPoints) {
-            pickResult.userData = featureData.objInfos[intersect.index!];
-            return;
+        const featureIndex = getIntersectedFeatureIndex(intersect);
+        if (featureIndex !== undefined) {
+            pickResult.userData = featureData.objInfos[featureIndex];
         }
-
-        if (
-            featureData.starts === undefined ||
-            featureData.starts.length === 0 ||
-            (intersect.faceIndex === undefined && intersect.index === undefined)
-        ) {
-            return;
-        }
-
-        if (featureData.starts.length === 1) {
-            pickResult.userData = featureData.objInfos[0];
-            return;
-        }
-
-        const intersectIndex =
-            intersect.faceIndex !== undefined ? intersect.faceIndex * 3 : intersect.index!;
-
-        // TODO: Implement binary search.
-        let objInfosIndex = 0;
-        for (const featureStartIndex of featureData.starts) {
-            if (featureStartIndex > intersectIndex) {
-                break;
-            }
-            objInfosIndex++;
-        }
-        pickResult.userData = featureData.objInfos[objInfosIndex - 1];
     }
 }
