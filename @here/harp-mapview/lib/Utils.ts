@@ -182,6 +182,7 @@ export namespace MapViewUtils {
             ),
             0
         );
+        // tslint:disable-next-line: deprecation
         mapView.lookAt(
             targetCoordinates,
             target.distanceTo(mapView.camera.position),
