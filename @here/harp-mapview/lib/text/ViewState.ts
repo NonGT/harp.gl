@@ -5,6 +5,7 @@
  */
 
 import { Env, GeometryKindSet } from "@here/harp-datasource-protocol";
+import { ViewRanges } from "@here/harp-datasource-protocol/lib/ViewRanges";
 import { Projection } from "@here/harp-geoutils";
 import { ElevationProvider } from "../ElevationProvider";
 
@@ -14,14 +15,10 @@ import { ElevationProvider } from "../ElevationProvider";
 export interface ViewState {
     worldCenter: THREE.Vector3; // View's center world coordinates.
     cameraIsMoving: boolean; // Whether view's camera is currently moving.
-    maxVisibilityDist: number; // Maximum far plane distance.
+    viewRanges: ViewRanges;
     zoomLevel: number; // View's zoom level.
-    env: Env;
     frameNumber: number; // Current frame number.
-    lookAtDistance: number; // Distance to the lookAt point.
+    targetDistance: number; // Distance to the lookAt point.
     isDynamic: boolean; // Whether a new frame for the view is already requested.
-    hiddenGeometryKinds?: GeometryKindSet; // Kinds of geometries that are disabled.
     renderedTilesChanged: boolean; // True if rendered tiles changed since previous frame.
-    projection: Projection; // geo to world space projection.
-    elevationProvider?: ElevationProvider; // Elevation data provider if available.
 }
