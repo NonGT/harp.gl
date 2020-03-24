@@ -40,6 +40,7 @@ import {
 import { LoggerManager } from "@here/harp-utils";
 import * as THREE from "three";
 import { DisplacedMesh } from "./geometry/DisplacedMesh";
+import { SolidLineMesh } from "./geometry/SolidLineMesh";
 import { Circles, Squares } from "./MapViewPoints";
 import { toPixelFormat, toTextureDataType, toTextureFilter, toWrappingMode } from "./ThemeHelpers";
 import { Tile } from "./Tile";
@@ -331,9 +332,15 @@ export function getObjectConstructor(
                   })
                 : THREE.Mesh;
         case "terrain":
+            return THREE.Mesh;
         case "dashed-line":
         case "solid-line":
-            return THREE.Mesh;
+            return SolidLineMesh.bind(undefined, () => {
+                return {
+                    min: tile.elevationRange.minElevation,
+                    max: tile.elevationRange.maxElevation
+                };
+            });
 
         case "circles":
             return Circles;
