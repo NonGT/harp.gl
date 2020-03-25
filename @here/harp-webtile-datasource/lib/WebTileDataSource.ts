@@ -7,14 +7,20 @@
 import * as THREE from "three";
 
 import { TileKey, TilingScheme, webMercatorTilingScheme } from "@here/harp-geoutils";
-import { CopyrightInfo, DataSource, Tile, UrlCopyrightProvider } from "@here/harp-mapview";
+import {
+    CopyrightInfo,
+    DataSource,
+    TextureLoader,
+    Tile,
+    UrlCopyrightProvider
+} from "@here/harp-mapview";
 import { TileGeometryCreator } from "@here/harp-mapview/lib/geometry/TileGeometryCreator";
 import { getOptionValue, LoggerManager } from "@here/harp-utils";
 
 const logger = LoggerManager.instance.create("MapView");
 
-const textureLoader = new THREE.TextureLoader();
-textureLoader.crossOrigin = ""; // empty assignment required to support CORS
+const textureLoader = new TextureLoader();
+textureLoader.setCrossOrigin(""); // empty assignment required to support CORS
 
 /**
  * An interface for the rendering options that can be passed to the [[WebTileDataSource]].
@@ -28,25 +34,39 @@ export interface WebTileRenderingOptions {
 }
 
 /**
+ * Authentification token/code provider.
+ */
+export type AuthenticationProvider = () => Promise<string>;
+
+/**
  * An interface for the type of parameters that can be passed to the [[WebTileDataSource]].
  */
 export interface WebTileDataSourceParameters {
     /**
      * The `apikey` for the access of the Web Tile Data.
+     * @note Will not be used if authenticationCode is defined as well.
      */
     apikey?: string;
 
     /**
      * The `appId` for the access of the Web Tile Data.
-     * @note Will not be used if apiKey is defined as well.
+     * @note Will not be used if apiKey or authenticationCode is defined as well.
      */
     appId?: string;
 
     /**
      * The `appCode` for the access of the Web Tile Data.
-     * @note Will not be used if apiKey is defined as well.
+     * @note Will not be used if apiKey or authenticationCode is defined as well.
      */
     appCode?: string;
+
+    /**
+     * Authentication code used for the different APIs.
+     *
+     * When [[AuthenticationProvider]] is is used as value, the provider is called before each
+     * to get currently valid authentication code/token.
+     */
+    authenticationCode?: string | AuthenticationProvider;
 
     // tslint:disable:max-line-length
     /**
@@ -282,17 +302,9 @@ export class WebTileDataSource extends DataSource {
         const scheme = mapTileParams.scheme || "normal.day";
         const baseScheme = scheme.split(".")[0] || "normal";
 
-        const { appId, appCode, apikey } = this.m_options;
-        const useApiKey = apikey !== undefined;
-        const useAppId = apikey === undefined && appId !== undefined && appCode !== undefined;
-        if (!useApiKey && !useAppId) {
-            throw new Error("Neither apiKey nor appId/appCode are defined.");
-        }
-
-        const authParams = useApiKey ? `apikey=${apikey}` : `app_id=${appId}&app_code=${appCode}`;
         const url =
             `https://1.${baseHostName}/maptile/2.1/copyright/${mapId}` +
-            `?output=json&${authParams}`;
+            `${this.getCopyrightRequestParams()}`;
         this.m_copyrightProvider = new UrlCopyrightProvider(url, baseScheme);
     }
 
@@ -321,31 +333,21 @@ export class WebTileDataSource extends DataSource {
         const column = tileKey.column;
         const row = tileKey.row;
         const level = tileKey.level;
-        const { appId, appCode, apikey } = this.m_options;
-        const authParams =
-            apikey !== undefined ? `apikey=${apikey}` : `app_id=${appId}&app_code=${appCode}`;
         const quadKey = tileKey.toQuadKey();
         const server = parseInt(quadKey[quadKey.length - 1], 10) + 1;
 
-        let url =
+        const url =
             `https://${server}.${this.m_tileBaseAddress}/` +
             `${level}/${column}/${row}/${this.m_resolution}/png8` +
-            `?${authParams}` +
-            getOptionValue(this.m_options.additionalRequestParameters, "");
+            `${this.getImageRequestParams()}`;
 
-        if (this.m_ppi !== WebTileDataSource.ppiValue.ppi72) {
-            // because ppi=72 is default, we do not include it in the request
-            url += `&ppi=${this.m_ppi}`;
-        }
-        if (this.m_languages !== undefined && this.m_languages[0] !== undefined) {
-            url += `&lg=${this.m_languages[0]}`;
-        }
+        this.getRequestHeaders()
+            .then(headers => {
+                textureLoader.setRequestHeaders(headers);
+                this.m_copyrightProvider.setRequestHeaders(headers);
 
-        if (this.m_languages !== undefined && this.m_languages[1] !== undefined) {
-            url += `&lg2=${this.m_languages[1]}`;
-        }
-
-        Promise.all([this.loadTexture(url), this.getTileCopyright(tile)])
+                return Promise.all([this.loadTexture(url), this.getTileCopyright(tile)]);
+            })
             .then(([texture, copyrightInfo]) => {
                 tile.copyrightInfo = copyrightInfo;
 
@@ -398,6 +400,74 @@ export class WebTileDataSource extends DataSource {
         };
     }
 
+    private getAuthParams(): string[] {
+        const { appId, appCode, apikey, authenticationCode } = this.m_options;
+
+        const useAuthenticationCode = authenticationCode !== undefined;
+        const useApiKey = apikey !== undefined;
+        const useAppId = appId !== undefined && appCode !== undefined;
+
+        if (useAuthenticationCode) {
+            return [];
+        } else if (useApiKey) {
+            return [`apikey=${apikey}`];
+        } else if (useAppId) {
+            return [`app_id=${appId}`, `&app_code=${appCode}`];
+        }
+
+        throw new Error("Neither apiKey, appId/appCode nor authenticationCode are defined.");
+    }
+
+    private getCopyrightRequestParams(): string {
+        const requestParams = ["output=json", ...this.getAuthParams()];
+
+        return `?${requestParams.join("&")}`;
+    }
+
+    private getImageRequestParams(): string {
+        const requestParams = this.getAuthParams();
+
+        if (this.m_options.additionalRequestParameters !== undefined) {
+            requestParams.push(this.m_options.additionalRequestParameters);
+        }
+        if (this.m_ppi !== WebTileDataSource.ppiValue.ppi72) {
+            // because ppi=72 is default, we do not include it in the request
+            requestParams.push(`ppi=${this.m_ppi}`);
+        }
+        if (this.m_languages !== undefined && this.m_languages[0] !== undefined) {
+            requestParams.push(`lg=${this.m_languages[0]}`);
+        }
+
+        if (this.m_languages !== undefined && this.m_languages[1] !== undefined) {
+            requestParams.push(`lg2=${this.m_languages[1]}`);
+        }
+
+        if (requestParams.length > 0) {
+            return `?${requestParams.join("&")}`;
+        }
+
+        return "";
+    }
+
+    private async getRequestHeaders(): Promise<any> {
+        const { authenticationCode } = this.m_options;
+
+        let token: string | undefined;
+        if (typeof authenticationCode === "string") {
+            token = authenticationCode;
+        } else if (authenticationCode !== undefined) {
+            token = await authenticationCode();
+        }
+
+        if (token !== undefined) {
+            return {
+                Authorization: `Bearer ${token}`
+            };
+        }
+
+        return undefined;
+    }
+
     private loadTexture(url: string): Promise<THREE.Texture> {
         return new Promise((resolve, reject) => {
             textureLoader.load(
@@ -419,6 +489,7 @@ export class WebTileDataSource extends DataSource {
         if (this.m_options.gatherCopyrightInfo === false) {
             return [this.HERE_COPYRIGHT_INFO];
         }
+
         return this.m_copyrightProvider.getCopyrights(tile.geoBox, tile.tileKey.level);
     }
 

@@ -11,14 +11,16 @@ import { assert } from "chai";
 import { WebTileDataSource } from "../index";
 
 describe("WebTileDataSource", function() {
-    it("ok", function() {
-        assert.isTrue(true);
-    });
-
     it("#createWebTileDataSource has default values", async function() {
         const apikey = "123";
         const webTileDataSource = new WebTileDataSource({
             apikey
+        });
+        assert(webTileDataSource.maxDataLevel === 19);
+    });
+    it("#createWebTileDataSource with token authentication", async function() {
+        const webTileDataSource = new WebTileDataSource({
+            authenticationCode: "foo123"
         });
         assert(webTileDataSource.maxDataLevel === 19);
     });
